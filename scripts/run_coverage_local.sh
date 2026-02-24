@@ -116,7 +116,7 @@ if [[ "${INSTALL_DEPS}" -eq 1 ]]; then
   if [[ $EUID -ne 0 ]]; then SUDO="sudo"; fi
   ${SUDO} apt --assume-yes update
   ${SUDO} -E "${WORKSPACE}/install_build_dependencies.sh"
-  ${SUDO} apt --assume-yes install lcov wget pigz xvfb clang-14 libclang-14-dev clinfo ca-certificates
+  ${SUDO} apt --assume-yes install lcov wget pigz xvfb clinfo ca-certificates
   python3 -m pip install --upgrade pip
   python3 -m pip install pytest pytest-cov pytest-xdist[psutil]
   python3 -m pip install -r "${WORKSPACE}/src/bindings/python/wheel/requirements-dev.txt"
