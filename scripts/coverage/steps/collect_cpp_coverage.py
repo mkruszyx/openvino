@@ -5,8 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..context import CoverageContext
-from ..runner import run_cmd, warn
+from coverage_workflow import CoverageContext, run_cmd, warn
 
 
 def _has_gcda(root: Path) -> bool:
