@@ -17,6 +17,63 @@ def _has_gcda(root: Path) -> bool:
     return any(root.rglob("*.gcda"))
 
 
+def _read_header(path: Path) -> bytes | None:
+    try:
+        with path.open("rb") as f:
+            header = f.read(12)
+        if len(header) < 12:
+            return None
+        return header
+    except OSError:
+        return None
+
+
+def _prefilter_incompatible_gcda(root: Path, *, label: str) -> None:
+    if not root.exists():
+        return
+
+    removed_missing_gcno = 0
+    removed_header_mismatch = 0
+    removed_unreadable = 0
+    scanned = 0
+
+    for gcda in root.rglob("*.gcda"):
+        scanned += 1
+        gcno = gcda.with_suffix(".gcno")
+        if not gcno.exists():
+            try:
+                gcda.unlink()
+                removed_missing_gcno += 1
+            except OSError:
+                pass
+            continue
+
+        gcda_header = _read_header(gcda)
+        gcno_header = _read_header(gcno)
+        if gcda_header is None or gcno_header is None:
+            try:
+                gcda.unlink()
+                removed_unreadable += 1
+            except OSError:
+                pass
+            continue
+
+        # bytes[4:12] are version+stamp/checksum fields that must match between gcda/gcno.
+        if gcda_header[4:12] != gcno_header[4:12]:
+            try:
+                gcda.unlink()
+                removed_header_mismatch += 1
+            except OSError:
+                pass
+
+    if removed_missing_gcno or removed_header_mismatch or removed_unreadable:
+        warn(
+            f"{label}: pre-filtered incompatible gcda files "
+            f"(scanned={scanned}, missing_gcno={removed_missing_gcno}, "
+            f"header_mismatch={removed_header_mismatch}, unreadable={removed_unreadable})"
+        )
+
+
 def _extract_problematic_gcda(log_text: str) -> list[Path]:
     patterns = (
         r"(?m)^([^\n]+\.gcda):stamp mismatch with notes file$",
@@ -72,7 +129,7 @@ def _run_lcov_capture(
         "split_crc=auto",
     ]
 
-    max_attempts = 6
+    max_attempts = 32
     for attempt in range(1, max_attempts + 1):
         display = " ".join(shlex.quote(part) for part in cmd)
         print(f"[coverage] $ {display}  # {label} (attempt {attempt}/{max_attempts})")
@@ -108,6 +165,10 @@ def run(ctx: CoverageContext) -> None:
     main_info = ctx.workspace / "coverage-cpp-main.info"
     js_info = ctx.workspace / "coverage-cpp-js.info"
     merged_info = ctx.workspace / "coverage.info"
+
+    _prefilter_incompatible_gcda(ctx.paths.build_dir, label="main build")
+    if ctx.paths.build_js_dir.exists():
+        _prefilter_incompatible_gcda(ctx.paths.build_js_dir, label="js build")
 
     _run_lcov_capture(
         directory=ctx.paths.build_dir,
