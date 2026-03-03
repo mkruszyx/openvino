@@ -67,7 +67,7 @@ def _run_lcov_capture(
         "--rc",
         "geninfo_unexecuted_blocks=1",
         "--ignore-errors",
-        "gcov,source,graph",
+        "gcov,source,graph,mismatch",
         "--compat",
         "split_crc=auto",
     ]
