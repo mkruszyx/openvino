@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import re
+import shlex
+import subprocess
 from pathlib import Path
 
 from coverage_workflow import CoverageContext, run_cmd, warn
@@ -14,6 +17,91 @@ def _has_gcda(root: Path) -> bool:
     return any(root.rglob("*.gcda"))
 
 
+def _extract_problematic_gcda(log_text: str) -> list[Path]:
+    patterns = (
+        r"(?m)^([^\n]+\.gcda):stamp mismatch with notes file$",
+        r"GCOV failed for ([^\s!]+\.gcda)!",
+        r"skipping \.gcda file ([^\s]+\.gcda) because corresponding \.gcno file",
+    )
+
+    found: set[Path] = set()
+    for pattern in patterns:
+        for raw in re.findall(pattern, log_text):
+            path = Path(raw.strip())
+            if path.exists():
+                found.add(path)
+    return sorted(found)
+
+
+def _remove_gcda_files(paths: list[Path]) -> int:
+    removed = 0
+    for path in paths:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _run_lcov_capture(
+    *,
+    directory: Path,
+    build_directory: Path,
+    base_directory: Path,
+    output_file: Path,
+    label: str,
+) -> None:
+    cmd = [
+        "lcov",
+        "--capture",
+        "--directory",
+        str(directory),
+        "--build-directory",
+        str(build_directory),
+        "--base-directory",
+        str(base_directory),
+        "--output-file",
+        str(output_file),
+        "--no-external",
+        "--rc",
+        "geninfo_unexecuted_blocks=1",
+        "--ignore-errors",
+        "gcov,source,graph",
+        "--compat",
+        "split_crc=auto",
+    ]
+
+    max_attempts = 6
+    for attempt in range(1, max_attempts + 1):
+        display = " ".join(shlex.quote(part) for part in cmd)
+        print(f"[coverage] $ {display}  # {label} (attempt {attempt}/{max_attempts})")
+        completed = subprocess.run(cmd, text=True, capture_output=True)
+
+        if completed.returncode == 0 and output_file.exists() and output_file.stat().st_size > 0:
+            return
+
+        log_text = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        bad_files = _extract_problematic_gcda(log_text)
+        removed = _remove_gcda_files(bad_files)
+
+        if removed > 0:
+            preview = ", ".join(str(p) for p in bad_files[:3])
+            more = "" if len(bad_files) <= 3 else f", ... (+{len(bad_files) - 3} more)"
+            warn(f"{label}: removed {removed} problematic .gcda file(s): {preview}{more}")
+            continue
+
+        if output_file.exists() and output_file.stat().st_size > 0:
+            warn(f"{label}: lcov returned {completed.returncode}, but {output_file.name} was produced; continuing.")
+            return
+
+        stderr_tail = (completed.stderr or "").strip().splitlines()[-8:]
+        if stderr_tail:
+            warn(f"{label}: lcov capture failed (attempt {attempt}) with tail:\n" + "\n".join(stderr_tail))
+
+    raise RuntimeError(f"{label}: failed to capture coverage after {max_attempts} attempts")
+
+
 def run(ctx: CoverageContext) -> None:
     src_dir = ctx.workspace
     report_dir = ctx.workspace / "coverage-report"
@@ -21,45 +109,21 @@ def run(ctx: CoverageContext) -> None:
     js_info = ctx.workspace / "coverage-cpp-js.info"
     merged_info = ctx.workspace / "coverage.info"
 
-    run_cmd(
-        [
-            "lcov",
-            "--capture",
-            "--directory",
-            str(ctx.paths.build_dir),
-            "--build-directory",
-            str(ctx.paths.build_dir),
-            "--base-directory",
-            str(src_dir),
-            "--output-file",
-            str(main_info),
-            "--no-external",
-            "--rc",
-            "geninfo_unexecuted_blocks=1",
-            "--ignore-errors",
-            "mismatch,negative,unused,gcov",
-        ]
+    _run_lcov_capture(
+        directory=ctx.paths.build_dir,
+        build_directory=ctx.paths.build_dir,
+        base_directory=src_dir,
+        output_file=main_info,
+        label="C/C++ main capture",
     )
 
     if _has_gcda(ctx.paths.build_js_dir):
-        run_cmd(
-            [
-                "lcov",
-                "--capture",
-                "--directory",
-                str(ctx.paths.build_js_dir),
-                "--build-directory",
-                str(ctx.paths.build_js_dir),
-                "--base-directory",
-                str(src_dir),
-                "--output-file",
-                str(js_info),
-                "--no-external",
-                "--rc",
-                "geninfo_unexecuted_blocks=1",
-                "--ignore-errors",
-                "mismatch,negative,unused,gcov",
-            ]
+        _run_lcov_capture(
+            directory=ctx.paths.build_js_dir,
+            build_directory=ctx.paths.build_js_dir,
+            base_directory=src_dir,
+            output_file=js_info,
+            label="C/C++ JS-side capture",
         )
         run_cmd(["lcov", "-a", str(main_info), "-a", str(js_info), "-o", str(merged_info)])
     else:
