@@ -571,7 +571,22 @@ def _command_step(args: argparse.Namespace) -> int:
 def _command_run_all(args: argparse.Namespace) -> int:
     ctx = _load_context(args)
 
-    if not ctx.io.is_github_mode:
+    try:
+        start_index = RUN_ALL_ORDER.index(args.from_step) if args.from_step else 0
+    except ValueError as exc:
+        raise ValueError(f"Unknown --from step: {args.from_step}") from exc
+
+    try:
+        end_index = RUN_ALL_ORDER.index(args.to_step) if args.to_step else len(RUN_ALL_ORDER) - 1
+    except ValueError as exc:
+        raise ValueError(f"Unknown --to step: {args.to_step}") from exc
+
+    if start_index > end_index:
+        raise ValueError("Invalid range: --from is after --to")
+
+    # In local mode, clear accumulated state only for full runs from the first step.
+    # Partial reruns (e.g. --from collect-cpp-coverage) should preserve existing test stats.
+    if not ctx.io.is_github_mode and start_index == 0:
         ctx.io.local_summary_file.write_text("", encoding="utf-8")
         ctx.io.local_env_file.write_text("", encoding="utf-8")
         for key in (
@@ -590,19 +605,6 @@ def _command_run_all(args: argparse.Namespace) -> int:
             "JS_TESTS_SKIPPED",
         ):
             os.environ.pop(key, None)
-
-    try:
-        start_index = RUN_ALL_ORDER.index(args.from_step) if args.from_step else 0
-    except ValueError as exc:
-        raise ValueError(f"Unknown --from step: {args.from_step}") from exc
-
-    try:
-        end_index = RUN_ALL_ORDER.index(args.to_step) if args.to_step else len(RUN_ALL_ORDER) - 1
-    except ValueError as exc:
-        raise ValueError(f"Unknown --to step: {args.to_step}") from exc
-
-    if start_index > end_index:
-        raise ValueError("Invalid range: --from is after --to")
 
     failed_steps: list[str] = []
 
